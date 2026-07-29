@@ -1,0 +1,41 @@
+# --- Project data -----------------------------------------------------------
+# Source PDFs and everything extracted from them stay local: they are large,
+# they are republished by the ECI anyway, and users bring their own.
+*.pdf
+*.csv
+*.xlsx
+*.xls
+
+# Raw screenshots; the one the app uses is committed as sample_format.png.
+Screenshot*.png
+
+# Keep the sample-format image -- app.py renders it on the upload screen.
+!sample_format.png
+
+# LibreOffice / Excel lock files
+.~lock.*#
+~$*
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+.python-version
+
+# --- Tooling ----------------------------------------------------------------
+.pytest_cache/
+.ipynb_checkpoints/
+.streamlit/secrets.toml
+.claude/
+
+# --- Editors / OS -----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

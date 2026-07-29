@@ -1,0 +1,12 @@
+# Core extraction
+pdfplumber>=0.11.0        # word-level coordinates, which the column parser relies on
+pandas>=2.0
+openpyxl>=3.1             # pandas' .xlsx writer
+
+# Web UI
+streamlit>=1.50
+
+# Streamlit 1.5x serves over uvicorn, whose websocket layer needs a modern
+# websockets release. Older ones fail at startup with:
+#   ImportError: cannot import name 'ServerProtocol' from 'websockets.server'
+websockets>=13
