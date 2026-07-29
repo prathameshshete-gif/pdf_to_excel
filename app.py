@@ -54,14 +54,15 @@ def show_required_format(expanded):
         with right:
             st.markdown(
                 """
-**Your PDF must be an ECI *DETAILED RESULTS* report**, laid out exactly like the
-sample on the left. The parser reads each column by its position on the page, so
-the layout matters more than the year or the state.
+**Your PDF must be an ECI *DETAILED RESULTS* report**, laid out like the sample on
+the left. Page size and margins do not matter — the column positions are measured
+from each file you upload.
 
 **Each page needs**
 
-- The column header row: `CANDIDATE NAME · SEX · AGE · CATEGORY · PARTY · SYMBOL`
-  then `GENERAL · POSTAL · TOTAL` under **VALID VOTES POLLED**, then `% VOTES POLLED`
+- The column header row: `CANDIDATE NAME · SEX · AGE · CATEGORY · PARTY`,
+  optionally `SYMBOL`, then `GENERAL · POSTAL · TOTAL` under **VALID VOTES
+  POLLED**, then `% VOTES POLLED`
 - A `Constituency  <n>. <NAME>   TOTAL ELECTORS : <number>` line starting each seat
 - One numbered row per candidate, ending with a `TURNOUT TOTAL:` line
 
@@ -73,6 +74,7 @@ the layout matters more than the year or the state.
 
 **Good to know**
 
+- Reports without a `SYMBOL` column (e.g. Punjab 2012) work; those rows get `-`.
 - Wrapped names and symbols spanning two or three lines are stitched back together.
 - Blank cells (Sex/Age/Category on *None of the Above* rows) come out as `-`.
 - Every extraction is checked against the `TURNOUT TOTAL` and `GRAND TOTAL`

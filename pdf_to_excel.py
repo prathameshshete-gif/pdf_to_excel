@@ -32,21 +32,28 @@ DEFAULT_XLSX = "MP_Election_2018.xlsx"
 
 MISSING = "-"
 
-# Column bands (x0, x1) measured from the PDF layout. A word belongs to the
-# column whose band contains the word's horizontal centre.
-COLUMNS = [
-    ("sl",       35.0, 50.0),
-    ("name",     50.0, 186.0),
-    ("sex",     186.0, 202.0),
-    ("age",     202.0, 229.0),
-    ("category", 229.0, 284.0),
-    ("party",   284.0, 320.0),
-    ("symbol",  320.0, 380.0),
-    ("general", 380.0, 440.0),
-    ("postal",  440.0, 484.0),
-    ("total",   484.0, 525.0),
-    ("percent", 525.0, 600.0),
+# The data columns, in the order they appear, keyed by the word that labels them
+# in the page header. Column positions are NOT hardcoded: page size and the set of
+# columns vary between reports (Punjab 2012 has no SYMBOL column and is A4 rather
+# than Letter), so the layout is measured from each PDF -- see detect_layout.
+HEADER_ANCHORS = [
+    ("name",     "CANDIDATE"),
+    ("sex",      "SEX"),
+    ("age",      "AGE"),
+    ("category", "CATEGORY"),
+    ("party",    "PARTY"),
+    ("symbol",   "SYMBOL"),     # absent from some reports
+    ("general",  "GENERAL"),
+    ("postal",   "POSTAL"),
+    ("total",    "TOTAL"),
+    ("percent",  "POLLED"),
 ]
+
+# Whitespace this wide between two columns counts as the gutter separating them.
+# Measured range that works across the reference reports is 1.5-3.0pt: below that
+# the gaps between words inside a cell start to register, above it the narrowest
+# real gutter (party/symbol in MP 2018, 3.4pt) is missed.
+MIN_GUTTER = 2.5
 
 # Two words are on the same visual line if their tops differ by less than this.
 ROW_TOLERANCE = 3.0
@@ -58,6 +65,14 @@ HEADER_WORDS = {
 }
 
 CONSTITUENCY_RE = re.compile(r"Constituency\s+(\d+)\.\s*(.+?)\s+TOTAL\s+ELECTORS\s*:?\s*(\d+)")
+
+# Lines that are structure rather than candidate data, and so must be kept out of
+# the column measurement -- they span several columns at once.
+NON_DATA_RE = re.compile(r"^(Constituency\s|TURNOUT|GRAND TOTAL|Page \d+ of \d+)")
+
+
+class LayoutError(Exception):
+    """The PDF does not look like an ECI detailed-results report."""
 
 # A cell that is too narrow for its content wraps onto the next line. Usually it
 # breaks between words ("Pressure" / "Cooker" -> "Pressure Cooker"), but when a
@@ -89,13 +104,98 @@ FRAGMENT_JOINS = {
 WRAPPING_COLUMNS = ("name", "symbol", "party", "category")
 
 
-def column_of(word):
+def column_of(word, columns):
     """Return the column name whose band contains this word's centre."""
     centre = (word["x0"] + word["x1"]) / 2.0
-    for name, x0, x1 in COLUMNS:
+    for name, x0, x1 in columns:
         if x0 <= centre < x1:
             return name
     return None
+
+
+def fields_from_header(pages_lines):
+    """Read the page header to learn which columns this report actually has.
+
+    Reports differ: Punjab 2012 carries no SYMBOL column. Taking the field list
+    from the header rather than assuming it keeps the two cases apart.
+    """
+    for lines in pages_lines:
+        for line in lines:
+            texts = {word["text"] for word in line["words"]}
+            if "CANDIDATE" not in texts:
+                continue
+            fields = ["sl"]  # the serial-number column is unlabelled
+            fields += [field for field, label in HEADER_ANCHORS if label in texts]
+            if len(fields) < 6:
+                continue
+            return fields
+    raise LayoutError(
+        "No 'CANDIDATE NAME ... GENERAL POSTAL TOTAL' header row found. "
+        "This does not look like an ECI detailed-results PDF, or the text layer "
+        "is missing (a scanned PDF needs OCR first)."
+    )
+
+
+def find_column_bands(pages_lines, page_width, bin_size=0.25):
+    """Locate the columns by finding the vertical whitespace gutters between them.
+
+    Every word on every candidate row is projected onto the x-axis; the stripes
+    that stay empty across the whole document are the gutters. This measures the
+    real layout instead of assuming a page size or margin.
+    """
+    occupied = [False] * (int(page_width / bin_size) + 2)
+    for lines in pages_lines:
+        for line in lines:
+            if is_page_furniture(line) or NON_DATA_RE.match(line["text"]):
+                continue
+            for word in line["words"]:
+                for index in range(int(word["x0"] / bin_size), int(word["x1"] / bin_size) + 1):
+                    if 0 <= index < len(occupied):
+                        occupied[index] = True
+
+    spans, start, empty_run = [], None, 0
+    for index, filled in enumerate(occupied):
+        if filled:
+            if start is None:
+                start = index
+            empty_run = 0
+        elif start is not None:
+            empty_run += 1
+            if empty_run * bin_size >= MIN_GUTTER:
+                spans.append((start * bin_size, (index - empty_run) * bin_size))
+                start = None
+    if start is not None:
+        spans.append((start * bin_size, page_width))
+    return spans
+
+
+def detect_layout(pages_lines, page_width):
+    """Work out this PDF's column bands: [(field, x0, x1), ...]."""
+    fields = fields_from_header(pages_lines)
+    spans = find_column_bands(pages_lines, page_width)
+
+    if len(spans) != len(fields):
+        raise LayoutError(
+            f"Found {len(spans)} columns of data but the header describes "
+            f"{len(fields)} ({', '.join(fields)}). The page layout is not one this "
+            f"parser recognises. Column edges measured: "
+            f"{['%.0f-%.0f' % s for s in spans]}"
+        )
+
+    # Widen each column to meet its neighbours halfway, so a word sitting slightly
+    # outside the measured extent still lands in the right column.
+    columns = []
+    for index, (field, (left, right)) in enumerate(zip(fields, spans)):
+        low = 0.0 if index == 0 else (spans[index - 1][1] + left) / 2.0
+        high = page_width if index == len(spans) - 1 else (right + spans[index + 1][0]) / 2.0
+        columns.append((field, low, high))
+    return columns
+
+
+def read_pages(pdf):
+    """Extract every page's words once, grouped into visual lines."""
+    return [group_into_lines(page.extract_words(keep_blank_chars=False, use_text_flow=False))
+            for page in pdf.pages]
 
 
 def group_into_lines(words):
@@ -119,15 +219,17 @@ def is_page_furniture(line):
         return True
     if text.startswith(("TURNOUT TOTAL", "GRAND TOTAL")):
         return True
+    if re.fullmatch(r"Page \d+ of \d+", text):  # footer, e.g. Punjab 2012
+        return True
     first = line["words"][0]["text"]
     return first in HEADER_WORDS and "Constituency" not in text
 
 
-def cells_of(line):
+def cells_of(line, columns):
     """Split one visual line into {column: text} using the x-bands."""
     cells = defaultdict(list)
     for word in line["words"]:
-        col = column_of(word)
+        col = column_of(word, columns)
         if col:
             cells[col].append(word["text"])
     return {col: " ".join(parts) for col, parts in cells.items()}
@@ -168,10 +270,13 @@ def extract_records(pdf_path, on_page=None):
     warnings = []
 
     with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
-        for page_no, page in enumerate(pdf.pages, start=1):
-            words = page.extract_words(keep_blank_chars=False, use_text_flow=False)
-            for line in group_into_lines(words):
+        pages_lines = read_pages(pdf)
+        page_width = max(page.width for page in pdf.pages)
+        columns = detect_layout(pages_lines, page_width)
+        total_pages = len(pages_lines)
+
+        for page_no, lines in enumerate(pages_lines, start=1):
+            for line in lines:
                 if is_page_furniture(line):
                     continue
 
@@ -185,7 +290,7 @@ def extract_records(pdf_path, on_page=None):
                     record = None
                     continue
 
-                cells = cells_of(line)
+                cells = cells_of(line, columns)
 
                 # A row starts a new candidate when it has a serial number in the
                 # left-most band. Everything else is wrapped text belonging to the
@@ -295,14 +400,17 @@ def audit_wrap_points(pdf_path):
     widest = defaultdict(float)
 
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        pages_lines = read_pages(pdf)
+        columns = detect_layout(pages_lines, max(page.width for page in pdf.pages))
+
+        for lines in pages_lines:
             previous = {}
-            for line in group_into_lines(page.extract_words()):
+            for line in lines:
                 if is_page_furniture(line):
                     continue
                 by_col = defaultdict(list)
                 for word in line["words"]:
-                    col = column_of(word)
+                    col = column_of(word, columns)
                     if col:
                         by_col[col].append(word)
                         widest[col] = max(widest[col], word["x1"] - word["x0"])

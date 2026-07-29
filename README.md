@@ -3,9 +3,11 @@
 Extracts candidate-level results from Election Commission of India **DETAILED RESULTS**
 PDFs into a clean Excel/CSV table — via a Streamlit UI or the command line.
 
-Verified against two full reports: Madhya Pradesh **2018** (230 constituencies, 3,129
-candidates) and **2013** (230 constituencies, 2,813 candidates). Every extracted figure
-reconciles exactly with the totals the PDFs print for themselves.
+The column layout is measured from each PDF rather than assumed, so reports with
+different page sizes and different sets of columns all work. Verified against three full
+reports — Madhya Pradesh **2018** and **2013**, and Punjab **2012** (A4, and with no
+SYMBOL column at all). Every extracted figure reconciles exactly with the totals the
+PDFs print for themselves.
 
 ---
 
@@ -54,14 +56,16 @@ validation     : all rows consistent (general+postal=total, serials 1..n)
 
 ## Which PDFs work
 
-An ECI **DETAILED RESULTS** report, laid out like `sample_format.png`. The parser reads
-columns by their position on the page, so the layout matters more than the year or state.
-Each page must carry:
+An ECI **DETAILED RESULTS** report, laid out like `sample_format.png`. Page size and
+margins do not matter — they are measured per file. Each page must carry:
 
-- the header row `CANDIDATE NAME · SEX · AGE · CATEGORY · PARTY · SYMBOL`, then
-  `GENERAL · POSTAL · TOTAL` under **VALID VOTES POLLED**, then `% VOTES POLLED`
+- the header row `CANDIDATE NAME · SEX · AGE · CATEGORY · PARTY`, optionally `SYMBOL`,
+  then `GENERAL · POSTAL · TOTAL` under **VALID VOTES POLLED**, then `% VOTES POLLED`
 - a `Constituency <n>. <NAME>   TOTAL ELECTORS : <number>` line opening each seat
 - numbered candidate rows, closed by a `TURNOUT TOTAL:` line
+
+`SYMBOL` is optional: Punjab 2012 omits it, and those rows come out with `Symbol` set
+to `-`. The 11 output columns stay the same either way.
 
 The PDF must be **text-based**. If you cannot select text in a PDF reader, it is a scan
 and needs OCR first. Password-protected files are not supported.
@@ -74,9 +78,13 @@ Plain text extraction breaks on these reports: long candidate names and multi-wo
 symbols wrap onto extra lines that read as separate records. So the parser works
 geometrically instead.
 
-1. **Columns by x-position.** Every column occupies a stable horizontal band on every
-   page (`COLUMNS` in `pdf_to_excel.py`). Each word is assigned to the band containing
-   its centre.
+1. **Columns discovered per PDF.** The page header names which columns exist (so a
+   missing `SYMBOL` is detected rather than assumed), and the bands themselves are
+   measured by projecting every candidate-row word onto the x-axis: the stripes that
+   stay empty across the whole document are the gutters between columns. Each word is
+   then assigned to the band containing its centre. Nothing about page size, margins or
+   column count is hardcoded — which is what lets one parser handle Letter-size MP
+   reports and A4 Punjab ones alike.
 2. **Rows by y-position.** Words within 3pt vertically form one visual line.
 3. **Records vs. continuations.** A line carrying a serial number starts a new candidate;
    any other line is wrapped text stitched back into the record above it.
@@ -119,6 +127,13 @@ Both reference PDFs also reconcile to the printed grand totals exactly:
 |---|---|---|---|---|---|
 | MP 2018 | 230 | 3,129 | 37,850,051 | 287,477 | 38,137,528 |
 | MP 2013 | 230 | 2,813 | 33,604,006 | 248,498 | 33,852,504 |
+| Punjab 2012 | 117 | 1,078 | 13,892,711 | 8,713 | 13,901,424 |
+
+Per-constituency `TURNOUT TOTAL` lines match on all 577 constituencies across the three.
+
+A PDF whose layout cannot be read raises a `LayoutError` naming the problem — a missing
+header row, or a column count that disagrees with the header — instead of silently
+producing shifted data.
 
 ---
 
