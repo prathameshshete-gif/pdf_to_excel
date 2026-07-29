@@ -2,13 +2,16 @@
 Streamlit UI for the ECI election-result PDF extractor.
 
 Upload one or more "DETAILED RESULTS" PDFs, watch the pages being parsed, review
-a short summary of what came out, and download the combined result as CSV/Excel.
+a short summary of what came out, and download one Excel workbook per PDF -- as a
+zip when several were uploaded.
 
 Run with:
     streamlit run app.py
 """
 
 import io
+import re
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -17,8 +20,40 @@ import streamlit as st
 from pdf_to_excel import extract_records, to_dataframe, validate
 
 SAMPLE_FORMAT_IMAGE = Path(__file__).with_name("sample_format.png")
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 st.set_page_config(page_title="Election PDF to Excel", page_icon="📊", layout="wide")
+
+
+def excel_name(pdf_name):
+    """'Punjab 2012 AE Result.pdf' -> 'Punjab 2012 AE Result.xlsx'."""
+    stem = Path(pdf_name).stem.strip().lstrip(".")
+    stem = re.sub(r'[\\/:*?"<>|]', "_", stem)      # illegal on Windows / in zips
+    return f"{stem or 'results'}.xlsx"
+
+
+def to_excel_bytes(df):
+    """Render one table as a .xlsx in memory."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Results")
+    return buffer.getvalue()
+
+
+def zip_of(workbooks):
+    """Bundle (filename, bytes) pairs into a single zip, keeping names unique."""
+    buffer = io.BytesIO()
+    used = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, blob in workbooks:
+            # Two uploads can share a name; don't let one silently overwrite the other.
+            unique, counter = name, 2
+            while unique in used:
+                unique = f"{Path(name).stem} ({counter}).xlsx"
+                counter += 1
+            used.add(unique)
+            archive.writestr(unique, blob)
+    return buffer.getvalue()
 
 
 def for_display(df):
@@ -27,7 +62,7 @@ def for_display(df):
     Columns that mix numbers with the "-" placeholder are of object dtype, which
     Arrow cannot type; Streamlit would fall back to a string cast anyway and log a
     traceback each rerun. Casting here keeps "-" visible and the log quiet. Only
-    the preview is affected -- the CSV/Excel downloads keep their real types.
+    the preview is affected -- the downloaded workbooks keep their real types.
     """
     display = df.copy()
     for column in display.columns:
@@ -136,12 +171,10 @@ for file_index, upload in enumerate(uploads):
         st.warning(f"**{upload.name}** — no candidate rows found. Is this an ECI detailed-results PDF?")
         continue
 
+    # Each PDF keeps its own table: it is downloaded as its own workbook, so the
+    # fixed 11 columns stay exactly as they are, with no provenance column added.
     df = to_dataframe(records)
-    if len(uploads) > 1:
-        # Provenance only when it is actually ambiguous -- appended last so the
-        # fixed 11-column layout stays intact.
-        df["Source File"] = upload.name
-    frames.append(df)
+    frames.append((upload.name, df))
 
     problems, n_constituencies = validate(records)
     summaries.append({
@@ -160,7 +193,12 @@ if not frames:
     footer()
     st.stop()
 
-data = pd.concat(frames, ignore_index=True)
+# One combined table purely for the on-screen preview and headline numbers; the
+# downloads below stay per-file.
+data = pd.concat(
+    [df.assign(**{"Source File": name}) if len(frames) > 1 else df for name, df in frames],
+    ignore_index=True,
+)
 
 # ---- summary -------------------------------------------------------------
 st.subheader("Extraction summary")
@@ -183,9 +221,16 @@ right.metric("Total valid votes", f"{pd.to_numeric(data['Total Valid Votes'], er
 # ---- preview -------------------------------------------------------------
 st.subheader("Extracted data")
 
-constituencies = ["All"] + sorted(data["Constituency"].unique())
-choice = st.selectbox("Filter by constituency", constituencies)
-view = data if choice == "All" else data[data["Constituency"] == choice]
+view = data
+if "Source File" in data.columns:
+    # Constituency names can repeat across states, so narrow by file first.
+    picked = st.selectbox("Filter by file", ["All"] + [name for name, _ in frames])
+    if picked != "All":
+        view = view[view["Source File"] == picked]
+
+choice = st.selectbox("Filter by constituency", ["All"] + sorted(view["Constituency"].unique()))
+if choice != "All":
+    view = view[view["Constituency"] == choice]
 
 st.dataframe(for_display(view), hide_index=True, width="stretch", height=420)
 st.caption(f"Showing {len(view):,} of {len(data):,} rows.")
@@ -193,22 +238,23 @@ st.caption(f"Showing {len(view):,} of {len(data):,} rows.")
 # ---- download ------------------------------------------------------------
 st.subheader("Download")
 
-csv_bytes = data.to_csv(index=False).encode("utf-8")
+workbooks = [(excel_name(source), to_excel_bytes(df)) for source, df in frames]
 
-excel_buffer = io.BytesIO()
-with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-    data.to_excel(writer, index=False, sheet_name="Results")
-
-col_csv, col_xlsx = st.columns(2)
-col_csv.download_button(
-    "⬇️ Download CSV", csv_bytes,
-    file_name="election_results.csv", mime="text/csv", width="stretch",
-)
-col_xlsx.download_button(
-    "⬇️ Download Excel", excel_buffer.getvalue(),
-    file_name="election_results.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    width="stretch",
-)
+if len(workbooks) == 1:
+    name, blob = workbooks[0]
+    st.download_button(
+        f"⬇️ Download {name}", blob, file_name=name, mime=XLSX_MIME, width="stretch",
+    )
+else:
+    st.download_button(
+        f"⬇️ Download all {len(workbooks)} Excel files (.zip)",
+        zip_of(workbooks), file_name="election_results.zip",
+        mime="application/zip", width="stretch",
+    )
+    st.caption("One workbook per PDF, named after the source file:")
+    for name, blob in workbooks:
+        st.download_button(
+            f"⬇️ {name}", blob, file_name=name, mime=XLSX_MIME, key=f"dl-{name}",
+        )
 
 footer()

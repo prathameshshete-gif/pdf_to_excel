@@ -36,7 +36,11 @@ streamlit run app.py
 ```
 
 Upload one or more PDFs, watch the per-page progress bar, review the summary, then
-download CSV or Excel.
+download the results as Excel.
+
+Each PDF produces **its own workbook, named after the source file** —
+`Punjab 2012 AE Result Only.pdf` → `Punjab 2012 AE Result Only.xlsx`. Upload several and
+you get a single `.zip` of all of them, plus individual buttons if you only want one.
 
 ## Run on the command line
 
